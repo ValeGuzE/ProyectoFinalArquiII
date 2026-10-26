@@ -3,7 +3,7 @@
 Simulación funcional de un sistema de monitoreo perimetral urbano para la Municipalidad de San Juan Sacatepéquez: detección, procesamiento, correlación y visualización de eventos críticos sobre una arquitectura distribuida orientada a eventos.
 Proyecto final de Arquitectura de Computadores II, Universidad Mariano Gálvez (2026).
 
-Repositorio: pendiente de agregar
+Repositorio: https://github.com/ValeGuzE/ProyectoFinalArquiII
 
 ```
 Simuladores (5 sensores, escenarios, reporte manual, JMeter)
@@ -85,7 +85,7 @@ Todos los comandos son de PowerShell. Sirve el que trae Windows (no hace falta P
 - **Desde el archivo comprimido:** descomprimirlo y abrir PowerShell dentro de la carpeta que contiene `docker-compose.yml`.
 - **Desde el repositorio:**
   ```powershell
-  git clone <dirección del repositorio> monitoreo-sjs
+  git clone https://github.com/ValeGuzE/ProyectoFinalArquiII.git monitoreo-sjs
   cd monitoreo-sjs
   ```
 
@@ -269,7 +269,7 @@ servicios/aseguradora_mock/  aseguradora simulada (REST)
 simulador/                generadores de eventos, escenarios, reporte manual y evaluación
 airflow/dags/             retención de datos, reporte diario y análisis de falsos positivos
 pruebas/jmeter/           plan de carga
-docs/entrega/             informe final del proyecto con sus anexos (Word y PDF)
+Informe_final/entrega/    informe final del proyecto con sus anexos (PDF)
 ```
 
 ## Privacidad

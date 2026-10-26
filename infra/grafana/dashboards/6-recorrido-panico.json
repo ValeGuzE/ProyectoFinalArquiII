@@ -1,0 +1,2430 @@
+{
+  "uid": "recorrido-panico",
+  "title": "6. Recorrido de un pánico (línea de tiempo)",
+  "description": "Cómo pasa un pánico por el sistema (sensor, NGINX, ingestor, Kafka, correlador, despachador) y cómo termina en alerta real o en falso positivo.",
+  "tags": [
+    "monitoreo",
+    "sjs",
+    "falsos-positivos",
+    "explicacion"
+  ],
+  "timezone": "America/Guatemala",
+  "refresh": "5s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "schemaVersion": 41,
+  "editable": false,
+  "graphTooltip": 0,
+  "templating": {
+    "list": [
+      {
+        "name": "resultado",
+        "label": "Mostrar",
+        "type": "custom",
+        "query": "Todos : todos, Alertas reales : real, Falsos positivos : falso, Pendientes : pendiente",
+        "current": {
+          "text": "Todos",
+          "value": "todos"
+        },
+        "multi": false,
+        "includeAll": false,
+        "hide": 0
+      },
+      {
+        "name": "panico",
+        "label": "Pánico",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "postgres-sjs"
+        },
+        "query": "WITH pan AS ( SELECT e.event_id, e.occurred_at, e.zone, e.data->>'alertType' AS tipo, e.scenario_id FROM events e WHERE e.event_type = 'security.panic_button.pressed' AND $__timeFilter(e.occurred_at) ORDER BY e.occurred_at DESC LIMIT 500 ), usos AS ( SELECT u.id, a.alert_type, a.created_at FROM alerts a CROSS JOIN unnest(a.source_event_ids) AS u(id) WHERE a.created_at >= $__timeFrom() ), r AS ( SELECT pan.*, z.zone_name, (SELECT u.alert_type FROM usos u WHERE u.id = pan.event_id AND u.alert_type <> 'PANICO_NO_CONFIRMADO' ORDER BY u.created_at LIMIT 1) AS real, EXISTS (SELECT 1 FROM usos u WHERE u.id = pan.event_id AND u.alert_type = 'PANICO_NO_CONFIRMADO') AS falso FROM pan JOIN zones z ON z.zone = pan.zone ) SELECT to_char(occurred_at AT TIME ZONE 'America/Guatemala', 'DD/MM HH24:MI:SS') || ' | ' || zone_name || ' | ' || tipo || ' => ' || CASE WHEN real IS NOT NULL THEN 'alerta real ' || real WHEN falso THEN 'falso positivo' ELSE 'pendiente' END || coalesce(' | ' || scenario_id, '') AS __text, event_id::text AS __value FROM r WHERE '${resultado}' = 'todos' OR ('${resultado}' = 'real' AND real IS NOT NULL) OR ('${resultado}' = 'falso' AND real IS NULL AND falso) OR ('${resultado}' = 'pendiente' AND real IS NULL AND NOT falso) ORDER BY occurred_at DESC",
+        "definition": "WITH pan AS ( SELECT e.event_id, e.occurred_at, e.zone, e.data->>'alertType' AS tipo, e.scenario_id FROM events e WHERE e.event_type = 'security.panic_button.pressed' AND $__timeFilter(e.occurred_at) ORDER BY e.occurred_at DESC LIMIT 500 ), usos AS ( SELECT u.id, a.alert_type, a.created_at FROM alerts a CROSS JOIN unnest(a.source_event_ids) AS u(id) WHERE a.created_at >= $__timeFrom() ), r AS ( SELECT pan.*, z.zone_name, (SELECT u.alert_type FROM usos u WHERE u.id = pan.event_id AND u.alert_type <> 'PANICO_NO_CONFIRMADO' ORDER BY u.created_at LIMIT 1) AS real, EXISTS (SELECT 1 FROM usos u WHERE u.id = pan.event_id AND u.alert_type = 'PANICO_NO_CONFIRMADO') AS falso FROM pan JOIN zones z ON z.zone = pan.zone ) SELECT to_char(occurred_at AT TIME ZONE 'America/Guatemala', 'DD/MM HH24:MI:SS') || ' | ' || zone_name || ' | ' || tipo || ' => ' || CASE WHEN real IS NOT NULL THEN 'alerta real ' || real WHEN falso THEN 'falso positivo' ELSE 'pendiente' END || coalesce(' | ' || scenario_id, '') AS __text, event_id::text AS __value FROM r WHERE '${resultado}' = 'todos' OR ('${resultado}' = 'real' AND real IS NOT NULL) OR ('${resultado}' = 'falso' AND real IS NULL AND falso) OR ('${resultado}' = 'pendiente' AND real IS NULL AND NOT falso) ORDER BY occurred_at DESC",
+        "refresh": 2,
+        "sort": 0,
+        "multi": false,
+        "includeAll": false,
+        "hide": 0,
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "text",
+      "title": "",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 6
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### Cómo leer este tablero\n\nElige arriba un **Pánico** (el más reciente sale primero). Con **Mostrar** se filtran solo las alertas reales o solo los falsos positivos. Abajo se ve el camino que siguió ese pánico dentro del sistema:\n\n- **El diagrama:** cada caja es un servicio (un contenedor de Docker). **Verde:** por aquí pasó. **Rojo:** terminó en alerta real. **Naranja:** falso positivo. **Azul:** todavía esperando. **Gris:** no aplica.\n- **La línea de tiempo:** lo mismo, paso a paso, con la hora exacta, cuánto tardó cada tramo y qué hizo cada servicio.\n\nPara crear ejemplos nuevos: menú del simulador (`simular.bat`), opción 3. ESC-ROBO-01 termina en alerta real y ESC-FALSO-01 en falso positivo. La lista de pánicos se arma al abrir el tablero: si acabas de crear uno, recarga la página (F5)."
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Resumen del pánico elegido",
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-sjs"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-sjs"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "WITH p AS ( SELECT e.*, z.zone_name FROM events e JOIN zones z ON z.zone = e.zone WHERE e.event_id = '${panico}'::uuid ), alertas AS ( SELECT a.* FROM alerts a, p WHERE a.created_at BETWEEN p.occurred_at AND p.occurred_at + interval '3 hours' AND p.event_id = ANY(a.source_event_ids) ), confirmo AS ( SELECT * FROM alertas WHERE alert_type <> 'PANICO_NO_CONFIRMADO' ORDER BY created_at LIMIT 1 ), falso AS ( SELECT * FROM alertas WHERE alert_type = 'PANICO_NO_CONFIRMADO' ORDER BY created_at LIMIT 1 ), decision AS ( SELECT CASE WHEN EXISTS (SELECT 1 FROM confirmo) AND EXISTS (SELECT 1 FROM falso) THEN 'corregido' WHEN EXISTS (SELECT 1 FROM confirmo) THEN 'real' WHEN EXISTS (SELECT 1 FROM falso) THEN 'falso' ELSE 'pendiente' END AS estado, coalesce((SELECT round(extract(epoch FROM (f.created_at - f.latency_ms * interval '1 millisecond') - p.occurred_at)) FROM falso f, p), 300) AS ventana ), despachos AS ( SELECT d.*, CASE d.destino WHEN 'external.pnc' THEN 'PNC' WHEN 'external.bomberos' THEN 'Bomberos' WHEN 'external.conred' THEN 'CONRED' WHEN 'aseguradora' THEN 'Aseguradora' ELSE 'nadie' END AS nombre FROM dispatches d WHERE d.alert_id IN (SELECT alert_id FROM confirmo UNION ALL SELECT alert_id FROM falso) ) SELECT CASE d.estado WHEN 'real' THEN 'ALERTA REAL' WHEN 'corregido' THEN 'ALERTA REAL (corregida)' WHEN 'falso' THEN 'FALSO POSITIVO' ELSE 'PENDIENTE' END AS \"Resultado\", p.zone_name AS \"Sector\", coalesce(c.alert_type, f.alert_type, 'todavía ninguna') AS \"Alerta creada\", coalesce(nullif(CASE WHEN extract(epoch FROM coalesce(c.created_at, f.created_at) - p.occurred_at) IS NULL THEN '' ELSE CASE WHEN abs(extract(epoch FROM coalesce(c.created_at, f.created_at) - p.occurred_at)) < 1 THEN round(abs(extract(epoch FROM coalesce(c.created_at, f.created_at) - p.occurred_at)) * 1000) || ' ms' WHEN abs(extract(epoch FROM coalesce(c.created_at, f.created_at) - p.occurred_at)) < 120 THEN to_char(abs(extract(epoch FROM coalesce(c.created_at, f.created_at) - p.occurred_at)), 'FM990.0') || ' s' ELSE floor(abs(extract(epoch FROM coalesce(c.created_at, f.created_at) - p.occurred_at)) / 60) || ' min ' || round(mod(abs(extract(epoch FROM coalesce(c.created_at, f.created_at) - p.occurred_at)), 60)) || ' s' END END, ''), 'todavía no') AS \"Del pánico a la decisión\", coalesce(c.latency_ms || ' ms', '-') AS \"Latencia del sistema\", coalesce((SELECT string_agg(DISTINCT s.nombre, ', ') FROM despachos s WHERE s.destino <> 'ninguno'), CASE WHEN d.estado = 'falso' THEN 'nadie' ELSE '-' END) AS \"Se avisó a\" FROM p CROSS JOIN decision d LEFT JOIN confirmo c ON true LEFT JOIN falso f ON true"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#30486b"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "ALERTA REAL": {
+                  "color": "#c62828",
+                  "index": 0
+                },
+                "ALERTA REAL (corregida)": {
+                  "color": "#c62828",
+                  "index": 1
+                },
+                "FALSO POSITIVO": {
+                  "color": "#e65100",
+                  "index": 2
+                },
+                "PENDIENTE": {
+                  "color": "#1565c0",
+                  "index": 3
+                },
+                "nadie": {
+                  "color": "#e65100",
+                  "index": 4
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/.*/"
+        },
+        "orientation": "vertical",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "text": {
+          "titleSize": 13,
+          "valueSize": 20
+        }
+      }
+    },
+    {
+      "type": "canvas",
+      "title": "El camino del pánico por el sistema (cada caja es un contenedor de Docker)",
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 24,
+        "h": 16
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-sjs"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-sjs"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "WITH p AS ( SELECT e.*, z.zone_name FROM events e JOIN zones z ON z.zone = e.zone WHERE e.event_id = '${panico}'::uuid ), alertas AS ( SELECT a.* FROM alerts a, p WHERE a.created_at BETWEEN p.occurred_at AND p.occurred_at + interval '3 hours' AND p.event_id = ANY(a.source_event_ids) ), confirmo AS ( SELECT * FROM alertas WHERE alert_type <> 'PANICO_NO_CONFIRMADO' ORDER BY created_at LIMIT 1 ), falso AS ( SELECT * FROM alertas WHERE alert_type = 'PANICO_NO_CONFIRMADO' ORDER BY created_at LIMIT 1 ), decision AS ( SELECT CASE WHEN EXISTS (SELECT 1 FROM confirmo) AND EXISTS (SELECT 1 FROM falso) THEN 'corregido' WHEN EXISTS (SELECT 1 FROM confirmo) THEN 'real' WHEN EXISTS (SELECT 1 FROM falso) THEN 'falso' ELSE 'pendiente' END AS estado, coalesce((SELECT round(extract(epoch FROM (f.created_at - f.latency_ms * interval '1 millisecond') - p.occurred_at)) FROM falso f, p), 300) AS ventana ), despachos AS ( SELECT d.*, CASE d.destino WHEN 'external.pnc' THEN 'PNC' WHEN 'external.bomberos' THEN 'Bomberos' WHEN 'external.conred' THEN 'CONRED' WHEN 'aseguradora' THEN 'Aseguradora' ELSE 'nadie' END AS nombre FROM dispatches d WHERE d.alert_id IN (SELECT alert_id FROM confirmo UNION ALL SELECT alert_id FROM falso) ) , x AS ( SELECT p.*, d.estado, d.ventana, c.alert_type AS c_tipo, c.rule AS c_regla, c.created_at AS c_creada, f.created_at AS f_creada, coalesce((SELECT min(s.enviado_at) FROM despachos s WHERE s.alert_id = c.alert_id), (SELECT min(s.enviado_at) FROM despachos s WHERE s.alert_id = f.alert_id)) AS envio, (SELECT string_agg(DISTINCT s.nombre, ', ') FROM despachos s WHERE s.destino <> 'ninguno') AS a_quien, (SELECT string_agg(CASE e.event_type WHEN 'environment.acoustic.detected' THEN 'acústico ' || (e.data->>'soundType') || ' ' || (e.data->>'criticalProbability') WHEN 'citizen.report.created' THEN 'reporte ' || (e.data->>'reportType') WHEN 'traffic.speed.reading' THEN 'radar ' || (e.data->>'speedKmh') || ' km/h' WHEN 'traffic.lpr.read' THEN 'cámara ' || (e.data->>'direction') || ' ' || (e.data->>'estimatedSpeedKmh') || ' km/h' ELSE 'pánico ' || (e.data->>'alertType') END, ' + ' ORDER BY e.occurred_at) FROM events e WHERE e.event_id = ANY(c.source_event_ids) AND e.event_id <> p.event_id) AS lista FROM p CROSS JOIN decision d LEFT JOIN confirmo c ON true LEFT JOIN falso f ON true ) SELECT 'paso' AS b0_c, (data->>'alertType') || ' en ' || zone_name AS b0_1, CASE data->>'origin' WHEN 'APP_MOVIL' THEN 'desde la app' ELSE 'botón fijo' END AS b0_2, to_char(occurred_at AT TIME ZONE 'America/Guatemala', 'HH24:MI:SS.MS') AS b0_3, 'paso' AS b1_c, 'NGINX lo pasó al' AS b1_1, ingestor_id || ', que lo validó' AS b1_2, CASE WHEN extract(epoch FROM ingested_at - occurred_at) IS NULL THEN ' ' ELSE CASE WHEN extract(epoch FROM ingested_at - occurred_at) < -0.0005 THEN '-' ELSE '+' END || CASE WHEN abs(extract(epoch FROM ingested_at - occurred_at)) < 1 THEN round(abs(extract(epoch FROM ingested_at - occurred_at)) * 1000) || ' ms' WHEN abs(extract(epoch FROM ingested_at - occurred_at)) < 120 THEN to_char(abs(extract(epoch FROM ingested_at - occurred_at)), 'FM990.0') || ' s' ELSE floor(abs(extract(epoch FROM ingested_at - occurred_at)) / 60) || ' min ' || round(mod(abs(extract(epoch FROM ingested_at - occurred_at)), 60)) || ' s' END END AS b1_3, 'paso' AS b2_c, 'topic events.standardized' AS b2_1, 'clave ' || zone || ' (sector)' AS b2_2, 'esperó ' || CASE WHEN extract(epoch FROM processed_at - ingested_at) IS NULL THEN ' ' ELSE CASE WHEN abs(extract(epoch FROM processed_at - ingested_at)) < 1 THEN round(abs(extract(epoch FROM processed_at - ingested_at)) * 1000) || ' ms' WHEN abs(extract(epoch FROM processed_at - ingested_at)) < 120 THEN to_char(abs(extract(epoch FROM processed_at - ingested_at)), 'FM990.0') || ' s' ELSE floor(abs(extract(epoch FROM processed_at - ingested_at)) / 60) || ' min ' || round(mod(abs(extract(epoch FROM processed_at - ingested_at)), 60)) || ' s' END END AS b2_3, 'paso' AS b3_c, 'lo guardó y dejó el' AS b3_1, 'pánico PENDIENTE' AS b3_2, CASE WHEN extract(epoch FROM processed_at - occurred_at) IS NULL THEN ' ' ELSE CASE WHEN extract(epoch FROM processed_at - occurred_at) < -0.0005 THEN '-' ELSE '+' END || CASE WHEN abs(extract(epoch FROM processed_at - occurred_at)) < 1 THEN round(abs(extract(epoch FROM processed_at - occurred_at)) * 1000) || ' ms' WHEN abs(extract(epoch FROM processed_at - occurred_at)) < 120 THEN to_char(abs(extract(epoch FROM processed_at - occurred_at)), 'FM990.0') || ' s' ELSE floor(abs(extract(epoch FROM processed_at - occurred_at)) / 60) || ' min ' || round(mod(abs(extract(epoch FROM processed_at - occurred_at)), 60)) || ' s' END END AS b3_3, CASE estado WHEN 'pendiente' THEN 'pendiente' WHEN 'falso' THEN 'falso' ELSE 'real' END AS b4_c, CASE estado WHEN 'falso' THEN 'FALSO POSITIVO' WHEN 'pendiente' THEN 'PENDIENTE' ELSE 'ALERTA REAL' END AS b4_1, CASE WHEN estado IN ('real', 'corregido') THEN c_tipo WHEN estado = 'falso' THEN 'ventana de ' || ventana || ' s' ELSE 'esperando otros' END AS b4_2, CASE WHEN estado IN ('real', 'corregido') THEN 'regla ' || split_part(c_regla, '_', 1) || ', ' || CASE WHEN extract(epoch FROM c_creada - occurred_at) IS NULL THEN ' ' ELSE CASE WHEN extract(epoch FROM c_creada - occurred_at) < -0.0005 THEN '-' ELSE '+' END || CASE WHEN abs(extract(epoch FROM c_creada - occurred_at)) < 1 THEN round(abs(extract(epoch FROM c_creada - occurred_at)) * 1000) || ' ms' WHEN abs(extract(epoch FROM c_creada - occurred_at)) < 120 THEN to_char(abs(extract(epoch FROM c_creada - occurred_at)), 'FM990.0') || ' s' ELSE floor(abs(extract(epoch FROM c_creada - occurred_at)) / 60) || ' min ' || round(mod(abs(extract(epoch FROM c_creada - occurred_at)), 60)) || ' s' END END WHEN estado = 'falso' THEN 'sin confirmación' ELSE 'sensores del sector' END AS b4_3, CASE estado WHEN 'pendiente' THEN 'no' WHEN 'falso' THEN 'falso' ELSE 'paso' END AS b5_c, 'topic correlated.alerts' AS b5_1, CASE estado WHEN 'pendiente' THEN 'todavía nada' WHEN 'falso' THEN 'PANICO_NO_CONFIRMADO' ELSE c_tipo END AS b5_2, CASE estado WHEN 'pendiente' THEN ' ' ELSE 'guardada en PostgreSQL' END AS b5_3, CASE WHEN envio IS NULL THEN 'no' WHEN estado = 'falso' THEN 'falso' ELSE 'paso' END AS b6_c, CASE WHEN envio IS NULL THEN 'todavía nada' ELSE 'leyó la alerta' END AS b6_1, CASE WHEN envio IS NULL THEN ' ' WHEN estado = 'falso' THEN 'y solo la registró' ELSE 'y la enrutó' END AS b6_2, CASE WHEN envio IS NULL THEN ' ' ELSE CASE WHEN extract(epoch FROM envio - coalesce(c_creada, f_creada)) IS NULL THEN ' ' ELSE CASE WHEN extract(epoch FROM envio - coalesce(c_creada, f_creada)) < -0.0005 THEN '-' ELSE '+' END || CASE WHEN abs(extract(epoch FROM envio - coalesce(c_creada, f_creada))) < 1 THEN round(abs(extract(epoch FROM envio - coalesce(c_creada, f_creada))) * 1000) || ' ms' WHEN abs(extract(epoch FROM envio - coalesce(c_creada, f_creada))) < 120 THEN to_char(abs(extract(epoch FROM envio - coalesce(c_creada, f_creada))), 'FM990.0') || ' s' ELSE floor(abs(extract(epoch FROM envio - coalesce(c_creada, f_creada))) / 60) || ' min ' || round(mod(abs(extract(epoch FROM envio - coalesce(c_creada, f_creada))), 60)) || ' s' END END END AS b6_3, CASE WHEN a_quien IS NOT NULL THEN 'aviso' WHEN estado = 'falso' THEN 'falso' ELSE 'no' END AS b7_c, coalesce(a_quien, CASE estado WHEN 'falso' THEN 'NADIE' ELSE 'todavía nadie' END) AS b7_1, CASE WHEN a_quien IS NOT NULL THEN 'a los ' || CASE WHEN extract(epoch FROM envio - occurred_at) IS NULL THEN ' ' ELSE CASE WHEN abs(extract(epoch FROM envio - occurred_at)) < 1 THEN round(abs(extract(epoch FROM envio - occurred_at)) * 1000) || ' ms' WHEN abs(extract(epoch FROM envio - occurred_at)) < 120 THEN to_char(abs(extract(epoch FROM envio - occurred_at)), 'FM990.0') || ' s' ELSE floor(abs(extract(epoch FROM envio - occurred_at)) / 60) || ' min ' || round(mod(abs(extract(epoch FROM envio - occurred_at)), 60)) || ' s' END END WHEN estado = 'falso' THEN 'no se moviliza a nadie' ELSE ' ' END AS b7_2, CASE WHEN a_quien IS NOT NULL THEN 'del pánico' ELSE ' ' END AS b7_3, CASE WHEN estado IN ('real', 'corregido') THEN 'paso' WHEN estado = 'falso' THEN 'falso' ELSE 'pendiente' END AS o_c, CASE WHEN lista IS NOT NULL THEN lista WHEN estado = 'falso' THEN 'ninguno completó una regla' ELSE 'todavía ninguno' END AS o_1, CASE WHEN estado IN ('real', 'corregido') THEN 'confirmaron el pánico' WHEN estado = 'falso' THEN 'con este pánico (ver la tabla)' ELSE 'la ventana sigue abierta' END AS o_2 FROM x"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/_c$/"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "paso": {
+                        "color": "#2e7d32",
+                        "index": 0
+                      },
+                      "real": {
+                        "color": "#c62828",
+                        "index": 1
+                      },
+                      "falso": {
+                        "color": "#e65100",
+                        "index": 2
+                      },
+                      "pendiente": {
+                        "color": "#1565c0",
+                        "index": 3
+                      },
+                      "no": {
+                        "color": "#4a4f5a",
+                        "index": 4
+                      },
+                      "aviso": {
+                        "color": "#b71c1c",
+                        "index": 5
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "inlineEditing": false,
+        "showAdvancedTypes": true,
+        "panZoom": false,
+        "infinitePan": false,
+        "root": {
+          "type": "frame",
+          "name": "raiz",
+          "elements": [
+            {
+              "type": "rectangle",
+              "name": "b0",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "background": {
+                "color": {
+                  "field": "b0_c",
+                  "fixed": "#4a4f5a"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#d8d9da"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [
+                {
+                  "source": {
+                    "x": 1,
+                    "y": 0
+                  },
+                  "target": {
+                    "x": -1,
+                    "y": 0
+                  },
+                  "targetName": "b1",
+                  "path": "straight",
+                  "color": {
+                    "field": "b1_c",
+                    "fixed": "#8e959e"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  }
+                }
+              ],
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 0.8,
+                "right": 88.3,
+                "top": 36,
+                "bottom": 30
+              }
+            },
+            {
+              "type": "text",
+              "name": "b0_0",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "1. SENSOR"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 13,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 1.1,
+                "right": 88.6,
+                "top": 38.0,
+                "bottom": 54.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "b0_1",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b0_1",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 1.1,
+                "right": 88.6,
+                "top": 45.5,
+                "bottom": 47.0
+              }
+            },
+            {
+              "type": "text",
+              "name": "b0_2",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b0_2",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 1.1,
+                "right": 88.6,
+                "top": 53.0,
+                "bottom": 39.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "b0_3",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b0_3",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 1.1,
+                "right": 88.6,
+                "top": 60.5,
+                "bottom": 32.0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "b1",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "background": {
+                "color": {
+                  "field": "b1_c",
+                  "fixed": "#4a4f5a"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#d8d9da"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [
+                {
+                  "source": {
+                    "x": 1,
+                    "y": 0
+                  },
+                  "target": {
+                    "x": -1,
+                    "y": 0
+                  },
+                  "targetName": "b2",
+                  "path": "straight",
+                  "color": {
+                    "field": "b2_c",
+                    "fixed": "#8e959e"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  }
+                },
+                {
+                  "source": {
+                    "x": 0,
+                    "y": 1
+                  },
+                  "target": {
+                    "x": 0,
+                    "y": -1
+                  },
+                  "targetName": "invalido",
+                  "path": "straight",
+                  "color": {
+                    "fixed": "#8e959e"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  }
+                }
+              ],
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 13.25,
+                "right": 75.85,
+                "top": 36,
+                "bottom": 30
+              }
+            },
+            {
+              "type": "text",
+              "name": "b1_0",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "2. NGINX + INGESTOR"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 13,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 13.55,
+                "right": 76.15,
+                "top": 38.0,
+                "bottom": 54.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "b1_1",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b1_1",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 13.55,
+                "right": 76.15,
+                "top": 45.5,
+                "bottom": 47.0
+              }
+            },
+            {
+              "type": "text",
+              "name": "b1_2",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b1_2",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 13.55,
+                "right": 76.15,
+                "top": 53.0,
+                "bottom": 39.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "b1_3",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b1_3",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 13.55,
+                "right": 76.15,
+                "top": 60.5,
+                "bottom": 32.0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "b2",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "background": {
+                "color": {
+                  "field": "b2_c",
+                  "fixed": "#4a4f5a"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#d8d9da"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [
+                {
+                  "source": {
+                    "x": 1,
+                    "y": 0
+                  },
+                  "target": {
+                    "x": -1,
+                    "y": 0
+                  },
+                  "targetName": "b3",
+                  "path": "straight",
+                  "color": {
+                    "field": "b3_c",
+                    "fixed": "#8e959e"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  }
+                }
+              ],
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 25.7,
+                "right": 63.4,
+                "top": 36,
+                "bottom": 30
+              }
+            },
+            {
+              "type": "text",
+              "name": "b2_0",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "3. KAFKA"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 13,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 26.0,
+                "right": 63.7,
+                "top": 38.0,
+                "bottom": 54.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "b2_1",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b2_1",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 26.0,
+                "right": 63.7,
+                "top": 45.5,
+                "bottom": 47.0
+              }
+            },
+            {
+              "type": "text",
+              "name": "b2_2",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b2_2",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 26.0,
+                "right": 63.7,
+                "top": 53.0,
+                "bottom": 39.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "b2_3",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b2_3",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 26.0,
+                "right": 63.7,
+                "top": 60.5,
+                "bottom": 32.0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "b3",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "background": {
+                "color": {
+                  "field": "b3_c",
+                  "fixed": "#4a4f5a"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#d8d9da"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [
+                {
+                  "source": {
+                    "x": 1,
+                    "y": 0
+                  },
+                  "target": {
+                    "x": -1,
+                    "y": 0
+                  },
+                  "targetName": "b4",
+                  "path": "straight",
+                  "color": {
+                    "field": "b4_c",
+                    "fixed": "#8e959e"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  }
+                },
+                {
+                  "source": {
+                    "x": 0,
+                    "y": -1
+                  },
+                  "target": {
+                    "x": -0.77,
+                    "y": 1
+                  },
+                  "targetName": "postgres",
+                  "path": "straight",
+                  "color": {
+                    "fixed": "#8e959e"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  }
+                }
+              ],
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 38.14999999999999,
+                "right": 50.95,
+                "top": 36,
+                "bottom": 30
+              }
+            },
+            {
+              "type": "text",
+              "name": "b3_0",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "4. CORRELADOR + REDIS"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 13,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 38.44999999999999,
+                "right": 51.25,
+                "top": 38.0,
+                "bottom": 54.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "b3_1",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b3_1",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 38.44999999999999,
+                "right": 51.25,
+                "top": 45.5,
+                "bottom": 47.0
+              }
+            },
+            {
+              "type": "text",
+              "name": "b3_2",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b3_2",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 38.44999999999999,
+                "right": 51.25,
+                "top": 53.0,
+                "bottom": 39.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "b3_3",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b3_3",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 38.44999999999999,
+                "right": 51.25,
+                "top": 60.5,
+                "bottom": 32.0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "b4",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "background": {
+                "color": {
+                  "field": "b4_c",
+                  "fixed": "#4a4f5a"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#d8d9da"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [
+                {
+                  "source": {
+                    "x": 1,
+                    "y": 0
+                  },
+                  "target": {
+                    "x": -1,
+                    "y": 0
+                  },
+                  "targetName": "b5",
+                  "path": "straight",
+                  "color": {
+                    "field": "b5_c",
+                    "fixed": "#8e959e"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  }
+                }
+              ],
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 50.599999999999994,
+                "right": 38.5,
+                "top": 36,
+                "bottom": 30
+              }
+            },
+            {
+              "type": "text",
+              "name": "b4_0",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "5. DECISIÓN"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 13,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 50.89999999999999,
+                "right": 38.8,
+                "top": 38.0,
+                "bottom": 54.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "b4_1",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b4_1",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 50.89999999999999,
+                "right": 38.8,
+                "top": 45.5,
+                "bottom": 47.0
+              }
+            },
+            {
+              "type": "text",
+              "name": "b4_2",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b4_2",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 50.89999999999999,
+                "right": 38.8,
+                "top": 53.0,
+                "bottom": 39.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "b4_3",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b4_3",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 50.89999999999999,
+                "right": 38.8,
+                "top": 60.5,
+                "bottom": 32.0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "b5",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "background": {
+                "color": {
+                  "field": "b5_c",
+                  "fixed": "#4a4f5a"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#d8d9da"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [
+                {
+                  "source": {
+                    "x": 1,
+                    "y": 0
+                  },
+                  "target": {
+                    "x": -1,
+                    "y": 0
+                  },
+                  "targetName": "b6",
+                  "path": "straight",
+                  "color": {
+                    "field": "b6_c",
+                    "fixed": "#8e959e"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  }
+                }
+              ],
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 63.05,
+                "right": 26.05,
+                "top": 36,
+                "bottom": 30
+              }
+            },
+            {
+              "type": "text",
+              "name": "b5_0",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "6. KAFKA"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 13,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 63.349999999999994,
+                "right": 26.35,
+                "top": 38.0,
+                "bottom": 54.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "b5_1",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b5_1",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 63.349999999999994,
+                "right": 26.35,
+                "top": 45.5,
+                "bottom": 47.0
+              }
+            },
+            {
+              "type": "text",
+              "name": "b5_2",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b5_2",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 63.349999999999994,
+                "right": 26.35,
+                "top": 53.0,
+                "bottom": 39.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "b5_3",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b5_3",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 63.349999999999994,
+                "right": 26.35,
+                "top": 60.5,
+                "bottom": 32.0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "b6",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "background": {
+                "color": {
+                  "field": "b6_c",
+                  "fixed": "#4a4f5a"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#d8d9da"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [
+                {
+                  "source": {
+                    "x": 1,
+                    "y": 0
+                  },
+                  "target": {
+                    "x": -1,
+                    "y": 0
+                  },
+                  "targetName": "b7",
+                  "path": "straight",
+                  "color": {
+                    "field": "b7_c",
+                    "fixed": "#8e959e"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  }
+                },
+                {
+                  "source": {
+                    "x": 0,
+                    "y": -1
+                  },
+                  "target": {
+                    "x": 0.77,
+                    "y": 1
+                  },
+                  "targetName": "postgres",
+                  "path": "straight",
+                  "color": {
+                    "fixed": "#8e959e"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  }
+                }
+              ],
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 75.49999999999999,
+                "right": 13.6,
+                "top": 36,
+                "bottom": 30
+              }
+            },
+            {
+              "type": "text",
+              "name": "b6_0",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "7. DESPACHADOR"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 13,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 75.79999999999998,
+                "right": 13.9,
+                "top": 38.0,
+                "bottom": 54.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "b6_1",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b6_1",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 75.79999999999998,
+                "right": 13.9,
+                "top": 45.5,
+                "bottom": 47.0
+              }
+            },
+            {
+              "type": "text",
+              "name": "b6_2",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b6_2",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 75.79999999999998,
+                "right": 13.9,
+                "top": 53.0,
+                "bottom": 39.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "b6_3",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b6_3",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 75.79999999999998,
+                "right": 13.9,
+                "top": 60.5,
+                "bottom": 32.0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "b7",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "background": {
+                "color": {
+                  "field": "b7_c",
+                  "fixed": "#4a4f5a"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#d8d9da"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [],
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 87.94999999999999,
+                "right": 1.15,
+                "top": 36,
+                "bottom": 30
+              }
+            },
+            {
+              "type": "text",
+              "name": "b7_0",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "8. SE AVISÓ A"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 13,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 88.24999999999999,
+                "right": 1.45,
+                "top": 38.0,
+                "bottom": 54.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "b7_1",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b7_1",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 88.24999999999999,
+                "right": 1.45,
+                "top": 45.5,
+                "bottom": 47.0
+              }
+            },
+            {
+              "type": "text",
+              "name": "b7_2",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b7_2",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 88.24999999999999,
+                "right": 1.45,
+                "top": 53.0,
+                "bottom": 39.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "b7_3",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "b7_3",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 88.24999999999999,
+                "right": 1.45,
+                "top": 60.5,
+                "bottom": 32.0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "otros",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "background": {
+                "color": {
+                  "field": "o_c",
+                  "fixed": "#4a4f5a"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#d8d9da"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [
+                {
+                  "source": {
+                    "x": -0.33,
+                    "y": -1
+                  },
+                  "target": {
+                    "x": 0,
+                    "y": 1
+                  },
+                  "targetName": "b3",
+                  "path": "straight",
+                  "color": {
+                    "field": "o_c",
+                    "fixed": "#8e959e"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  }
+                }
+              ],
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 35.14999999999999,
+                "right": 39.55,
+                "top": 3,
+                "bottom": 72
+              }
+            },
+            {
+              "type": "text",
+              "name": "otros_0",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "OTROS SENSORES DEL MISMO SECTOR"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 13,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 35.44999999999999,
+                "right": 39.85,
+                "top": 5.0,
+                "bottom": 88.0
+              }
+            },
+            {
+              "type": "text",
+              "name": "otros_1",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "o_1",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 35.44999999999999,
+                "right": 39.85,
+                "top": 12.0,
+                "bottom": 81.0
+              }
+            },
+            {
+              "type": "text",
+              "name": "otros_2",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "o_2",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 35.44999999999999,
+                "right": 39.85,
+                "top": 19.0,
+                "bottom": 74.0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "invalido",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "background": {
+                "color": {
+                  "fixed": "#4a4f5a"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#d8d9da"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [],
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 12.75,
+                "right": 75.35,
+                "top": 3,
+                "bottom": 72
+              }
+            },
+            {
+              "type": "text",
+              "name": "invalido_0",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "TOPIC EVENTS.INVALID"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 13,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 13.05,
+                "right": 75.65,
+                "top": 5.0,
+                "bottom": 88.0
+              }
+            },
+            {
+              "type": "text",
+              "name": "invalido_1",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "si el evento viniera mal"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 13.05,
+                "right": 75.65,
+                "top": 12.0,
+                "bottom": 81.0
+              }
+            },
+            {
+              "type": "text",
+              "name": "invalido_2",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "(dead-letter)"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 13.05,
+                "right": 75.65,
+                "top": 19.0,
+                "bottom": 74.0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "postgres",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "background": {
+                "color": {
+                  "fixed": "#30486b"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#d8d9da"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [
+                {
+                  "source": {
+                    "x": 1,
+                    "y": 0
+                  },
+                  "target": {
+                    "x": -1,
+                    "y": 0
+                  },
+                  "targetName": "grafana",
+                  "path": "straight",
+                  "color": {
+                    "fixed": "#8e959e"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  }
+                }
+              ],
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 38.14999999999999,
+                "right": 13.6,
+                "top": 78,
+                "bottom": 3
+              }
+            },
+            {
+              "type": "text",
+              "name": "postgres_0",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "POSTGRESQL (BASE DE DATOS)"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 13,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 38.44999999999999,
+                "right": 13.9,
+                "top": 80.0,
+                "bottom": 12.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "postgres_1",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "guarda el evento (events), la alerta (alerts) y cada envío (dispatches)"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 38.44999999999999,
+                "right": 13.9,
+                "top": 87.5,
+                "bottom": 5.0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "grafana",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "background": {
+                "color": {
+                  "fixed": "#30486b"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#d8d9da"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [],
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 87.94999999999999,
+                "right": 1.15,
+                "top": 78,
+                "bottom": 3
+              }
+            },
+            {
+              "type": "text",
+              "name": "grafana_0",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "GRAFANA"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 13,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 88.24999999999999,
+                "right": 1.45,
+                "top": 80.0,
+                "bottom": 12.5
+              }
+            },
+            {
+              "type": "text",
+              "name": "grafana_1",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "lee PostgreSQL (solo lectura)"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 88.24999999999999,
+                "right": 1.45,
+                "top": 87.5,
+                "bottom": 5.0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "leyenda",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "background": {
+                "color": {
+                  "fixed": "#22252b"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#d8d9da"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [],
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 0.8,
+                "right": 75.9,
+                "top": 78,
+                "bottom": 3
+              }
+            },
+            {
+              "type": "text",
+              "name": "leyenda_0",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "COLORES"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 13,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 1.1,
+                "right": 76.2,
+                "top": 80.0,
+                "bottom": 15.0
+              }
+            },
+            {
+              "type": "text",
+              "name": "leyenda_1",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "verde: pasó por aquí | rojo: alerta real"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 1.1,
+                "right": 76.2,
+                "top": 85.0,
+                "bottom": 10.0
+              }
+            },
+            {
+              "type": "text",
+              "name": "leyenda_2",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "naranja: falso positivo | azul: esperando | gris: no aplica"
+                },
+                "color": {
+                  "fixed": "#ffffff"
+                },
+                "size": 12,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "scale"
+              },
+              "placement": {
+                "left": 1.1,
+                "right": 76.2,
+                "top": 90.0,
+                "bottom": 5.0
+              }
+            }
+          ],
+          "background": {
+            "color": {
+              "fixed": "transparent"
+            }
+          },
+          "border": {
+            "color": {
+              "fixed": "transparent"
+            }
+          },
+          "constraint": {
+            "horizontal": "left",
+            "vertical": "top"
+          },
+          "placement": {
+            "top": 0,
+            "left": 0,
+            "width": 100,
+            "height": 100
+          }
+        }
+      }
+    },
+    {
+      "type": "table",
+      "title": "Línea de tiempo, paso a paso (de arriba hacia abajo)",
+      "gridPos": {
+        "x": 0,
+        "y": 26,
+        "w": 24,
+        "h": 22
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-sjs"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-sjs"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "WITH p AS ( SELECT e.*, z.zone_name FROM events e JOIN zones z ON z.zone = e.zone WHERE e.event_id = '${panico}'::uuid ), alertas AS ( SELECT a.* FROM alerts a, p WHERE a.created_at BETWEEN p.occurred_at AND p.occurred_at + interval '3 hours' AND p.event_id = ANY(a.source_event_ids) ), confirmo AS ( SELECT * FROM alertas WHERE alert_type <> 'PANICO_NO_CONFIRMADO' ORDER BY created_at LIMIT 1 ), falso AS ( SELECT * FROM alertas WHERE alert_type = 'PANICO_NO_CONFIRMADO' ORDER BY created_at LIMIT 1 ), decision AS ( SELECT CASE WHEN EXISTS (SELECT 1 FROM confirmo) AND EXISTS (SELECT 1 FROM falso) THEN 'corregido' WHEN EXISTS (SELECT 1 FROM confirmo) THEN 'real' WHEN EXISTS (SELECT 1 FROM falso) THEN 'falso' ELSE 'pendiente' END AS estado, coalesce((SELECT round(extract(epoch FROM (f.created_at - f.latency_ms * interval '1 millisecond') - p.occurred_at)) FROM falso f, p), 300) AS ventana ), despachos AS ( SELECT d.*, CASE d.destino WHEN 'external.pnc' THEN 'PNC' WHEN 'external.bomberos' THEN 'Bomberos' WHEN 'external.conred' THEN 'CONRED' WHEN 'aseguradora' THEN 'Aseguradora' ELSE 'nadie' END AS nombre FROM dispatches d WHERE d.alert_id IN (SELECT alert_id FROM confirmo UNION ALL SELECT alert_id FROM falso) ) , pasos AS ( SELECT 1 AS orden, p.occurred_at AS hora, p.occurred_at AS ordenar, 'Sensor' AS etapa, 'Botón de pánico ' || p.device_id AS donde, 'Alguien presionó el botón (' || (p.data->>'alertType') || ', desde ' || CASE p.data->>'origin' WHEN 'APP_MOVIL' THEN 'la app del celular' ELSE 'un botón fijo' END || ') en ' || p.zone_name || '. El simulador hace de sensor: envía el evento en JSON por HTTP a NGINX (puerto 8080).' AS que_paso FROM p UNION ALL SELECT 2, p.ingested_at, p.ingested_at, 'Ingesta', 'NGINX y ' || p.ingestor_id, 'NGINX (el balanceador) se lo pasó al ' || p.ingestor_id || ', uno de los 3 ingestores. El ingestor revisó que el evento esté bien (campos, sector, coordenadas, hora, sin placa en claro), le anotó la hora de ingreso y lo publicó en Kafka. Si hubiera estado mal, iría al topic events.invalid.' FROM p UNION ALL SELECT 3, p.ingested_at, p.ingested_at, 'Kafka', 'Kafka, topic events.standardized', 'Kafka guardó el evento con la clave ' || p.zone || ': todos los eventos del sector van, en orden, a la misma partición. Kafka no decide nada, solo guarda y reparte. Si el correlador estuviera caído, el evento esperaría aquí sin perderse.' FROM p UNION ALL SELECT 4, p.processed_at, p.processed_at, 'Correlador', 'Correlador, Redis y PostgreSQL', 'El correlador lo leyó de Kafka, revisó en Redis que no fuera repetido, lo guardó en PostgreSQL (tabla events) y lo agregó a la ventana del sector en Redis. Un pánico solo no basta: quedó PENDIENTE en Redis (panicos_pendientes) esperando que otro sensor del mismo sector lo confirme dentro de la ventana de correlación.' FROM p UNION ALL SELECT 5, e.occurred_at, e.occurred_at, 'Otro sensor', CASE e.event_type WHEN 'environment.acoustic.detected' THEN 'Sensor acústico' WHEN 'citizen.report.created' THEN 'Reporte ciudadano' WHEN 'traffic.speed.reading' THEN 'Radar de velocidad' WHEN 'traffic.lpr.read' THEN 'Cámara de placas' ELSE 'Otro botón de pánico' END || ' ' || e.device_id, CASE e.event_type WHEN 'environment.acoustic.detected' THEN 'Detectó ' || (e.data->>'soundType') || ' con probabilidad ' || (e.data->>'criticalProbability') || ' (' || (e.data->>'decibels') || ' dB).' WHEN 'citizen.report.created' THEN 'Un vecino reportó ' || (e.data->>'reportType') || coalesce(': \"' || (e.data->>'message') || '\"', '') || '.' WHEN 'traffic.speed.reading' THEN 'Midió ' || (e.data->>'speedKmh') || ' km/h (límite ' || (e.data->>'limitKmh') || '), anomalía ' || (e.data->>'anomalyType') || '.' WHEN 'traffic.lpr.read' THEN 'Vio un vehículo ' || CASE e.data->>'direction' WHEN 'SALIDA' THEN 'SALIENDO' ELSE 'ENTRANDO' END || ' a ' || (e.data->>'estimatedSpeedKmh') || ' km/h, placa ' || (e.data->>'platePartial') || ' (la placa completa nunca viaja, solo su HMAC).' ELSE 'Otro pánico ' || (e.data->>'alertType') || '.' END || ' Mismo sector (' || p.zone_name || ')' || CASE WHEN e.occurred_at < p.occurred_at THEN ', y llegó ANTES del pánico: también sirve si está dentro de la ventana.' ELSE ', dentro de la ventana.' END FROM confirmo c CROSS JOIN p JOIN events e ON e.event_id = ANY(c.source_event_ids) AND e.event_id <> p.event_id UNION ALL SELECT 5, e.occurred_at, e.occurred_at, 'No sirvió', CASE e.event_type WHEN 'environment.acoustic.detected' THEN 'Sensor acústico' WHEN 'citizen.report.created' THEN 'Reporte ciudadano' WHEN 'traffic.speed.reading' THEN 'Radar de velocidad' WHEN 'traffic.lpr.read' THEN 'Cámara de placas' ELSE 'Otro botón de pánico' END || ' ' || e.device_id, CASE e.event_type WHEN 'environment.acoustic.detected' THEN 'Detectó ' || (e.data->>'soundType') || ' con probabilidad ' || (e.data->>'criticalProbability') || ' (' || (e.data->>'decibels') || ' dB).' WHEN 'citizen.report.created' THEN 'Un vecino reportó ' || (e.data->>'reportType') || coalesce(': \"' || (e.data->>'message') || '\"', '') || '.' WHEN 'traffic.speed.reading' THEN 'Midió ' || (e.data->>'speedKmh') || ' km/h (límite ' || (e.data->>'limitKmh') || '), anomalía ' || (e.data->>'anomalyType') || '.' WHEN 'traffic.lpr.read' THEN 'Vio un vehículo ' || CASE e.data->>'direction' WHEN 'SALIDA' THEN 'SALIENDO' ELSE 'ENTRANDO' END || ' a ' || (e.data->>'estimatedSpeedKmh') || ' km/h, placa ' || (e.data->>'platePartial') || ' (la placa completa nunca viaja, solo su HMAC).' ELSE 'Otro pánico ' || (e.data->>'alertType') || '.' END || ' ' || CASE WHEN p.data->>'alertType' = 'EMERGENCIA_MEDICA' THEN 'No confirma: ninguna regla confirma una emergencia médica.' WHEN e.event_type = 'security.panic_button.pressed' THEN 'No confirma: otro pánico no basta, se necesita un sensor distinto.' WHEN e.event_type = 'environment.acoustic.detected' AND e.data->>'soundType' = 'VIDRIO_ROTO' THEN 'No confirma: ninguna regla usa vidrio roto.' WHEN e.event_type = 'environment.acoustic.detected' AND e.data->>'soundType' = 'DISPARO' AND p.data->>'alertType' <> 'PANICO' THEN 'No confirma: un disparo solo confirma un pánico de tipo PANICO (regla R02).' WHEN e.event_type = 'environment.acoustic.detected' AND e.data->>'soundType' = 'DISPARO' AND (e.data->>'criticalProbability')::numeric < 0.7 THEN 'No confirma: la regla R02 pide probabilidad de 0.7 o más (sonido dudoso).' WHEN e.event_type = 'environment.acoustic.detected' AND e.data->>'soundType' = 'EXPLOSION' AND p.data->>'alertType' <> 'INCENDIO' THEN 'No confirma: una explosión solo confirma un pánico de INCENDIO (regla R04).' WHEN e.event_type = 'citizen.report.created' AND e.data->>'reportType' = 'INCENDIO' AND p.data->>'alertType' <> 'INCENDIO' THEN 'No confirma: un reporte de incendio solo confirma un pánico de INCENDIO (regla R04).' WHEN e.event_type = 'citizen.report.created' AND e.data->>'reportType' <> 'INCENDIO' THEN 'No confirma: un reporte de ' || lower(e.data->>'reportType') || ' no forma parte de ninguna regla con pánico.' WHEN e.event_type = 'traffic.speed.reading' AND e.data->>'anomalyType' = 'TRAYECTORIA_ANOMALA' THEN 'No confirma: la regla R01 pide exceso de velocidad, no trayectoria anómala.' WHEN e.event_type IN ('traffic.speed.reading', 'traffic.lpr.read') AND p.data->>'alertType' <> 'PANICO' THEN 'No confirma: la regla R01 solo usa pánicos de tipo PANICO.' WHEN e.event_type = 'traffic.speed.reading' THEN 'No completó la regla R01: además hacía falta una cámara con un vehículo SALIENDO.' ELSE 'Podía servir, pero la regla estaba en espera en el sector (cooldown) o el evento ya se había usado en otra alerta igual.' END FROM p CROSS JOIN decision d CROSS JOIN LATERAL ( SELECT e2.* FROM events e2 WHERE e2.zone = p.zone AND e2.event_id <> p.event_id AND e2.occurred_at BETWEEN p.occurred_at - d.ventana * interval '1 second' AND p.occurred_at + d.ventana * interval '1 second' AND (e2.event_type IN ('security.panic_button.pressed', 'environment.acoustic.detected', 'citizen.report.created') OR (e2.event_type = 'traffic.speed.reading' AND e2.data->>'anomalyType' <> 'NINGUNA') OR (e2.event_type = 'traffic.lpr.read' AND e2.data->>'direction' = 'SALIDA' AND (e2.data->>'estimatedSpeedKmh')::numeric > (SELECT limite_kmh FROM zones WHERE zone = p.zone))) ORDER BY abs(extract(epoch FROM e2.occurred_at - p.occurred_at)) LIMIT 8) e WHERE d.estado IN ('falso', 'pendiente') AND p.data->>'alertType' <> 'EMERGENCIA_MEDICA' UNION ALL SELECT 6, c.created_at, greatest(c.created_at, p.processed_at), 'Alerta real', 'Correlador: regla ' || c.rule, 'Con el último evento se cumplió la regla ' || c.rule || ' (' || c.description || '). El correlador creó la alerta ' || c.alert_type || ' (severidad ' || c.severity || '), la guardó en PostgreSQL (tabla alerts) y la publicó en Kafka (topic correlated.alerts). El pánico salió de pendientes: ya no puede ser falso positivo. Latencia: ' || c.latency_ms || ' ms desde que se envió el último evento (objetivo: menos de 2000 ms).' FROM confirmo c CROSS JOIN p UNION ALL SELECT 6, f.created_at, greatest(f.created_at, p.processed_at), 'Falso positivo', 'Correlador: se cerró la ventana', 'Pasaron ' || d.ventana || ' s (la ventana de correlación) y ningún otro sensor del sector completó una regla con este pánico. La alerta salió ' || to_char(f.latency_ms / 1000.0, 'FM990.0') || ' s después del cierre porque el correlador revisa los pánicos vencidos cada 10 s. Creó la alerta PANICO_NO_CONFIRMADO (severidad BAJA, estado FALSO_POSITIVO_PROBABLE) y la publicó en correlated.alerts.' || CASE WHEN p.data->>'alertType' = 'EMERGENCIA_MEDICA' THEN ' Las emergencias médicas no tienen regla de confirmación: siempre terminan así.' ELSE '' END || CASE WHEN EXISTS (SELECT 1 FROM confirmo) THEN ' Después sí llegó la confirmación (el correlador iba atrasado): es un falso positivo corregido.' ELSE '' END FROM falso f CROSS JOIN p CROSS JOIN decision d UNION ALL SELECT 6, now(), now(), 'Pendiente', 'Correlador: esperando', 'La ventana sigue abierta: si llega un evento del sector que complete una regla, será alerta real; si se cierra sin eso, será falso positivo.' FROM decision WHERE estado = 'pendiente' UNION ALL SELECT 7, s.enviado_at, s.enviado_at, CASE WHEN s.destino = 'ninguno' THEN 'Sin aviso' ELSE 'Aviso' END, 'Despachador: ' || s.nombre, CASE WHEN s.destino = 'ninguno' THEN 'El despachador leyó la alerta de correlated.alerts. Es un falso positivo: no se avisa a ninguna institución, solo queda registrado (tabla dispatches, destino ninguno).' WHEN s.destino = 'aseguradora' THEN 'El despachador leyó la alerta de correlated.alerts y avisó a la aseguradora por REST (POST /siniestros). Respuesta: ' || s.resultado || '.' ELSE 'El despachador leyó la alerta de correlated.alerts y avisó a ' || s.nombre || ' por Kafka (topic ' || s.destino || '). Quedó registrado en la tabla dispatches.' END FROM despachos s UNION ALL SELECT 8, (SELECT max(enviado_at) FROM despachos), (SELECT max(enviado_at) FROM despachos), 'Grafana', 'Grafana (estos tableros)', 'Grafana lee PostgreSQL cada 5 s con un usuario de solo lectura (grafana_ro): la alerta ya se ve en el dashboard 1 (tabla y mapa), en el 4 (bandeja de cada institución) y en el 5.' FROM decision WHERE EXISTS (SELECT 1 FROM despachos) ), ordenados AS ( SELECT s.*, extract(epoch FROM s.hora - p.occurred_at) AS desde_panico, extract(epoch FROM s.hora - lag(s.hora) OVER (ORDER BY s.ordenar, s.orden)) AS desde_anterior FROM pasos s CROSS JOIN p ) SELECT to_char(hora AT TIME ZONE 'America/Guatemala', 'HH24:MI:SS.MS') AS \"Hora\", CASE WHEN desde_panico IS NULL THEN '' ELSE CASE WHEN desde_panico < -0.0005 THEN '-' ELSE '+' END || CASE WHEN abs(desde_panico) < 1 THEN round(abs(desde_panico) * 1000) || ' ms' WHEN abs(desde_panico) < 120 THEN to_char(abs(desde_panico), 'FM990.0') || ' s' ELSE floor(abs(desde_panico) / 60) || ' min ' || round(mod(abs(desde_panico), 60)) || ' s' END END AS \"Desde el pánico\", CASE WHEN desde_anterior IS NULL THEN '' ELSE CASE WHEN desde_anterior < -0.0005 THEN '-' ELSE '+' END || CASE WHEN abs(desde_anterior) < 1 THEN round(abs(desde_anterior) * 1000) || ' ms' WHEN abs(desde_anterior) < 120 THEN to_char(abs(desde_anterior), 'FM990.0') || ' s' ELSE floor(abs(desde_anterior) / 60) || ' min ' || round(mod(abs(desde_anterior), 60)) || ' s' END END AS \"Desde el paso anterior\", etapa AS \"Etapa\", donde AS \"Dónde\", que_paso AS \"Qué pasó\" FROM ordenados ORDER BY ordenar, orden"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "cellOptions": {
+              "type": "auto",
+              "wrapText": true
+            },
+            "wrapText": true,
+            "inspect": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Hora"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 105
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Desde el pánico"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 125
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Desde el paso anterior"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 165
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Etapa"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 120
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "Sensor": {
+                        "color": "#1565c0",
+                        "index": 0
+                      },
+                      "Ingesta": {
+                        "color": "#5e35b1",
+                        "index": 1
+                      },
+                      "Kafka": {
+                        "color": "#455a64",
+                        "index": 2
+                      },
+                      "Correlador": {
+                        "color": "#00695c",
+                        "index": 3
+                      },
+                      "Otro sensor": {
+                        "color": "#2e7d32",
+                        "index": 4
+                      },
+                      "No sirvió": {
+                        "color": "#6d4c41",
+                        "index": 5
+                      },
+                      "Alerta real": {
+                        "color": "#c62828",
+                        "index": 6
+                      },
+                      "Falso positivo": {
+                        "color": "#e65100",
+                        "index": 7
+                      },
+                      "Pendiente": {
+                        "color": "#1565c0",
+                        "index": 8
+                      },
+                      "Aviso": {
+                        "color": "#b71c1c",
+                        "index": 9
+                      },
+                      "Sin aviso": {
+                        "color": "#e65100",
+                        "index": 10
+                      },
+                      "Grafana": {
+                        "color": "#30486b",
+                        "index": 11
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Dónde"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 270
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "type": "text",
+      "title": "",
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 12,
+        "h": 15
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### Qué hace cada pieza\n\n| Pieza | Qué hace |\n|---|---|\n| **Sensor** (simulador) | Crea el evento en JSON y lo envía por HTTP. No hay sensores físicos: los simula un script de Python. |\n| **NGINX** | Balanceador: reparte los eventos entre los 3 ingestores por turnos. Si uno se cae, usa los otros. |\n| **Ingestor** (FastAPI) | Revisa que el evento esté bien. Los malos van a `events.invalid`; los buenos, a `events.standardized`. |\n| **Kafka** | Guarda y reparte los eventos, en orden por sector. No decide nada. Si un servicio se cae, los eventos esperan aquí. |\n| **Correlador** (Python) | El cerebro: junta los eventos de un mismo sector dentro de la ventana y aplica las reglas R01 a R07. |\n| **Redis** | La memoria rápida del correlador: ventana de cada sector, pánicos pendientes, vehículos vistos y duplicados. |\n| **PostgreSQL** | Guarda todo: eventos, alertas y envíos. De aquí leen Grafana y Airflow. |\n| **Despachador** (Python) | Lee cada alerta y avisa: PNC, Bomberos y CONRED por Kafka; la aseguradora por REST. |\n| **Grafana** | Estos tableros. Lee PostgreSQL con un usuario de solo lectura. |"
+      }
+    },
+    {
+      "type": "text",
+      "title": "",
+      "gridPos": {
+        "x": 12,
+        "y": 48,
+        "w": 12,
+        "h": 15
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### Cuándo un pánico pasa a alerta real\n\nUn botón de pánico **solo no moviliza a nadie**: puede ser un error o una broma. El correlador lo deja **pendiente** y espera que otro sensor **del mismo sector** lo confirme dentro de la **ventana de correlación** (300 s; 60 s en modo demo). El otro evento puede llegar antes o después del pánico.\n\n| Pánico | Lo confirma | Alerta real | Se avisa a |\n|---|---|---|---|\n| PANICO | cámara con vehículo SALIENDO y exceso de velocidad | R01 ROBO_EN_CURSO | PNC |\n| PANICO | disparo con probabilidad de 0.7 o más | R02 ATAQUE_ARMADO | PNC |\n| INCENDIO | reporte de incendio o explosión | R04 INCENDIO_CONFIRMADO | Bomberos y CONRED |\n| EMERGENCIA_MEDICA | ninguna regla | siempre falso positivo | nadie |\n\n**Si la ventana se cierra sin confirmación**, el correlador (revisa cada 10 s) crea `PANICO_NO_CONFIRMADO`: severidad BAJA, estado `FALSO_POSITIVO_PROBABLE`. El despachador **no avisa a nadie**, solo lo registra.\n\n**Dos tiempos distintos:** \"Del pánico a la decisión\" incluye la espera de otros sensores (segundos o minutos). \"Latencia del sistema\" es lo que tarda el sistema desde que llega el último evento hasta crear la alerta (milisegundos; el objetivo es menos de 2 s)."
+      }
+    }
+  ]
+}

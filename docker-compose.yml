@@ -1,0 +1,329 @@
+name: monitoreo-sjs
+
+services:
+
+  kafka:
+    image: apache/kafka:4.3.1
+    profiles: ["core", "full"]
+    hostname: kafka
+    restart: unless-stopped
+    mem_limit: 1536m
+    environment:
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: INTERNO://:9092,CONTROLLER://:9093,EXTERNO://:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNO://kafka:9092,EXTERNO://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNO:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNO:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNO
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx1g"
+    ports:
+      - "127.0.0.1:9094:9094"
+    volumes:
+      - kafka-datos:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  kafka-init:
+    image: apache/kafka:4.3.1
+    profiles: ["core", "full"]
+    restart: "no"
+    mem_limit: 512m
+    entrypoint: ["/bin/bash", "/scripts/crear-topics.sh"]
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx256m"
+    volumes:
+      - ./infra/kafka/crear-topics.sh:/scripts/crear-topics.sh:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.5.0
+    profiles: ["core", "full"]
+    restart: unless-stopped
+    mem_limit: 768m
+    environment:
+      KAFKA_CLUSTERS_0_NAME: monitoreo-sjs
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    ports:
+      - "8085:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16.15
+    profiles: ["core", "full"]
+    restart: unless-stopped
+    mem_limit: 1g
+    environment:
+      TZ: ${TZ}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      APP_DB_USER: ${APP_DB_USER}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+      GRAFANA_RO_PASSWORD: ${GRAFANA_RO_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-datos:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7.4.11
+    profiles: ["core", "full"]
+    restart: unless-stopped
+    mem_limit: 512m
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-datos:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  ingestor-1: &ingestor
+    build: ./servicios/ingestor
+    image: monitoreo-sjs/ingestor:1.0
+    profiles: ["core", "full"]
+    restart: unless-stopped
+    mem_limit: 384m
+    environment:
+      INGESTOR_ID: ingestor-1
+      KAFKA_BOOTSTRAP: kafka:9092
+      SECTORES_PATH: /config/sectores.json
+      TZ: ${TZ}
+    volumes:
+      - ./config:/config:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
+  ingestor-2:
+    <<: *ingestor
+    environment:
+      INGESTOR_ID: ingestor-2
+      KAFKA_BOOTSTRAP: kafka:9092
+      SECTORES_PATH: /config/sectores.json
+      TZ: ${TZ}
+
+  ingestor-3:
+    <<: *ingestor
+    environment:
+      INGESTOR_ID: ingestor-3
+      KAFKA_BOOTSTRAP: kafka:9092
+      SECTORES_PATH: /config/sectores.json
+      TZ: ${TZ}
+
+  nginx:
+    image: nginx:1.30.5-alpine
+    profiles: ["core", "full"]
+    restart: unless-stopped
+    mem_limit: 128m
+    ports:
+      - "8080:80"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - ingestor-1
+      - ingestor-2
+      - ingestor-3
+
+  correlador:
+    build: ./servicios/correlador
+    image: monitoreo-sjs/correlador:1.0
+    profiles: ["core", "full"]
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      REDIS_HOST: redis
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB}
+      APP_DB_USER: ${APP_DB_USER}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+      SECTORES_PATH: /config/sectores.json
+      CORRELATION_WINDOW_SECONDS: ${CORRELATION_WINDOW_SECONDS}
+      ACOUSTIC_MIN_PROBABILITY: ${ACOUSTIC_MIN_PROBABILITY}
+      SLO_LATENCIA_MS: ${SLO_LATENCIA_MS}
+      SCHOOL_HOURS: ${SCHOOL_HOURS}
+      TZ: ${TZ}
+    volumes:
+      - ./config:/config:ro
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  despachador: &despachador
+    build: ./servicios/despachador
+    image: monitoreo-sjs/despachador:1.0
+    profiles: ["core"]
+    restart: unless-stopped
+    mem_limit: 256m
+    environment: &despachador-entorno
+      KAFKA_BOOTSTRAP: kafka:9092
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB}
+      APP_DB_USER: ${APP_DB_USER}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+      ASEGURADORA_URL: http://aseguradora-mock:8000
+      TZ: ${TZ}
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      aseguradora-mock:
+        condition: service_started
+
+  despachador-es:
+    <<: *despachador
+    profiles: ["full"]
+    environment:
+      <<: *despachador-entorno
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      aseguradora-mock:
+        condition: service_started
+      elasticsearch:
+        condition: service_healthy
+
+  aseguradora-mock:
+    build: ./servicios/aseguradora_mock
+    image: monitoreo-sjs/aseguradora-mock:1.0
+    profiles: ["core", "full"]
+    restart: unless-stopped
+    mem_limit: 128m
+    environment:
+      TZ: ${TZ}
+
+  simulador:
+    build: ./simulador
+    image: monitoreo-sjs/simulador:1.0
+    profiles: ["simulador"]
+    mem_limit: 512m
+    environment:
+      INGESTA_URL: http://nginx
+      SECTORES_PATH: /config/sectores.json
+      PLATE_HMAC_KEY: ${PLATE_HMAC_KEY}
+      REDIS_HOST: redis
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB}
+      APP_DB_USER: ${APP_DB_USER}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+      TZ: ${TZ}
+    volumes:
+      - ./config:/config:ro
+
+  grafana:
+    image: grafana/grafana:12.4.12
+    profiles: ["core", "full"]
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      TZ: ${TZ}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 5s
+      POSTGRES_DB: ${POSTGRES_DB}
+      GRAFANA_RO_PASSWORD: ${GRAFANA_RO_PASSWORD}
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-datos:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  elasticsearch:
+    image: elasticsearch:8.19.22
+    profiles: ["full"]
+    restart: unless-stopped
+    mem_limit: 2g
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+      TZ: ${TZ}
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - elasticsearch-datos:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  airflow:
+    image: apache/airflow:3.3.2-python3.12
+    profiles: ["full"]
+    restart: unless-stopped
+    mem_limit: 3g
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - 'echo "{\"admin\": \"$${AIRFLOW_ADMIN_PASSWORD}\"}" > /opt/airflow/simple_auth_manager_passwords.json.generated && exec airflow standalone'
+    environment:
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "admin:admin"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: America/Guatemala
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB}
+      APP_DB_USER: ${APP_DB_USER}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+      TZ: ${TZ}
+    ports:
+      - "8090:8080"
+    volumes:
+      - airflow-datos:/opt/airflow
+      - ./airflow/dags:/opt/airflow/dags:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  airflow-datos:
+  elasticsearch-datos:
+  kafka-datos:
+  postgres-datos:
+  redis-datos:
+  grafana-datos:

@@ -1,0 +1,117 @@
+{
+  "_ayuda": [
+    "Este archivo controla el simulador: tasas del tráfico normal y escenarios guionados.",
+    "Se lee cada vez que se ejecuta una simulación: no hace falta reconstruir ni reiniciar nada.",
+    "Después de editar, valida con: docker compose run --rm simulador simulador.py validar",
+    "",
+    "trafico.tasasPorMinuto: eventos por minuto en todo el municipio, por tipo de sensor.",
+    "trafico.porcentajeInvalidos: porcentaje de eventos dañados a propósito (prueba la dead-letter).",
+    "trafico.tamanoLote: cuántos eventos van en cada POST a /events/batch (máximo 500).",
+    "",
+    "escenarios: cada uno tiene descripcion, alertaEsperada (la usa evaluar.py) y pasos.",
+    "  alertaEsperada: ROBO_EN_CURSO, ATAQUE_ARMADO, ACCIDENTE_VIAL, INCENDIO_CONFIRMADO,",
+    "  VELOCIDAD_ENTRE_CAMARAS, ZONA_ESCOLAR, VEHICULO_REPORTADO, PANICO_NO_CONFIRMADO o NINGUNA.",
+    "  Para desactivar un escenario sin borrarlo, pon un guion bajo al inicio de su nombre (_ESC-...).",
+    "  El nombre solo puede tener letras, números, guion y guion bajo.",
+    "",
+    "Cada paso: esperar (segundos desde el paso anterior), sensor y sector (SJS-01 a SJS-07).",
+    "Campos opcionales por sensor (si faltan, se eligen al azar):",
+    "  panico:    tipo = PANICO | EMERGENCIA_MEDICA | INCENDIO",
+    "  lpr:       placa, velocidad (km/h), direccion = ENTRADA | SALIDA, camara (número del dispositivo)",
+    "  velocidad: velocidad (km/h), anomalia = NINGUNA | EXCESO_VELOCIDAD | TRAYECTORIA_ANOMALA",
+    "  acustico:  sonido = DISPARO | EXPLOSION | VIDRIO_ROTO, probabilidad (0 a 1)",
+    "  reporte:   tipo = ACCIDENTE | INCENDIO | ALTERCADO, mensaje (máximo 280), origen = USUARIO | APP | PUNTO_FISICO",
+    "placa: 'BUSCADA' usa una placa de la lista de robadas (regla R07). Cualquier otro nombre",
+    "  (ej. 'carro-A') inventa una placa al azar y la repite en todos los pasos con ese nombre.",
+    "  Sin placa, cada lectura es un carro distinto.",
+    "Los campos que empiezan con guion bajo (ej. '_nota') son comentarios y se ignoran."
+  ],
+
+  "trafico": {
+    "tasasPorMinuto": {
+      "lpr": 180,
+      "velocidad": 120,
+      "acustico": 2,
+      "panico": 1,
+      "reporte": 2
+    },
+    "porcentajeInvalidos": 1.5,
+    "tamanoLote": 50
+  },
+
+  "escenarios": {
+    "ESC-ROBO-01": {
+      "descripcion": "Robo en curso en Ciudad Quetzal: pánico, vehículo saliendo rápido y radar con exceso",
+      "alertaEsperada": "ROBO_EN_CURSO",
+      "pasos": [
+        { "esperar": 0,  "sensor": "panico",    "sector": "SJS-05", "tipo": "PANICO" },
+        { "esperar": 40, "sensor": "lpr",       "sector": "SJS-05", "velocidad": 85, "direccion": "SALIDA" },
+        { "esperar": 20, "sensor": "velocidad", "sector": "SJS-05", "velocidad": 92, "anomalia": "EXCESO_VELOCIDAD" }
+      ]
+    },
+    "ESC-ARMADO-01": {
+      "descripcion": "Ataque armado en el Casco urbano: disparo detectado y luego un pánico",
+      "alertaEsperada": "ATAQUE_ARMADO",
+      "pasos": [
+        { "esperar": 0,  "sensor": "acustico", "sector": "SJS-01", "sonido": "DISPARO", "probabilidad": 0.9 },
+        { "esperar": 30, "sensor": "panico",   "sector": "SJS-01", "tipo": "PANICO" }
+      ]
+    },
+    "ESC-ACCIDENTE-01": {
+      "descripcion": "Accidente vial en Lo de Mejía: trayectoria anómala y luego reporte ciudadano",
+      "alertaEsperada": "ACCIDENTE_VIAL",
+      "pasos": [
+        { "esperar": 0,  "sensor": "velocidad", "sector": "SJS-04", "velocidad": 55, "anomalia": "TRAYECTORIA_ANOMALA" },
+        { "esperar": 60, "sensor": "reporte",   "sector": "SJS-04", "tipo": "ACCIDENTE", "origen": "APP",
+          "mensaje": "Pickup se salió de la carretera y chocó contra un poste" }
+      ]
+    },
+    "ESC-INCENDIO-01": {
+      "descripcion": "Incendio en Villas del Quetzal: pánico de incendio y reporte ciudadano",
+      "alertaEsperada": "INCENDIO_CONFIRMADO",
+      "pasos": [
+        { "esperar": 0,  "sensor": "panico",  "sector": "SJS-06", "tipo": "INCENDIO" },
+        { "esperar": 45, "sensor": "reporte", "sector": "SJS-06", "tipo": "INCENDIO", "origen": "USUARIO",
+          "mensaje": "Sale humo negro de una casa en la esquina" }
+      ]
+    },
+    "ESC-TRAMO-01": {
+      "descripcion": "La misma placa pasa por Lo de Mejía y Sajcavillá a unos 100 km/h",
+      "alertaEsperada": "VELOCIDAD_ENTRE_CAMARAS",
+      "_nota": "Entre los centros de SJS-04 y SJS-02 hay unos 3.33 km: 120 s equivalen a unos 100 km/h. Velocidad legal en cada cámara y llegada como ENTRADA, para que solo se dispare la regla R05.",
+      "pasos": [
+        { "esperar": 0,   "sensor": "lpr", "sector": "SJS-04", "placa": "carro-tramo", "velocidad": 55, "direccion": "SALIDA",  "camara": 1 },
+        { "esperar": 120, "sensor": "lpr", "sector": "SJS-02", "placa": "carro-tramo", "velocidad": 45, "direccion": "ENTRADA", "camara": 1 }
+      ]
+    },
+    "ESC-ESCOLAR-01": {
+      "descripcion": "Vehículo a 45 km/h en zona escolar del Casco urbano (requiere horario escolar o modo demo)",
+      "alertaEsperada": "ZONA_ESCOLAR",
+      "pasos": [
+        { "esperar": 0, "sensor": "velocidad", "sector": "SJS-01", "velocidad": 45, "anomalia": "EXCESO_VELOCIDAD" }
+      ]
+    },
+    "ESC-BUSCADO-01": {
+      "descripcion": "Cámara de Cruz Blanca lee una placa reportada como robada",
+      "alertaEsperada": "VEHICULO_REPORTADO",
+      "pasos": [
+        { "esperar": 0, "sensor": "lpr", "sector": "SJS-03", "placa": "BUSCADA", "velocidad": 35, "direccion": "ENTRADA" }
+      ]
+    },
+    "ESC-FALSO-01": {
+      "descripcion": "Un solo pánico en Montúfar sin nada más: termina como falso positivo",
+      "alertaEsperada": "PANICO_NO_CONFIRMADO",
+      "pasos": [
+        { "esperar": 0, "sensor": "panico", "sector": "SJS-07", "tipo": "PANICO" }
+      ]
+    },
+    "ESC-RUIDO-01": {
+      "descripcion": "Pánico y vidrio roto con probabilidad baja en Sajcavillá: no alcanza para alerta crítica",
+      "alertaEsperada": "PANICO_NO_CONFIRMADO",
+      "pasos": [
+        { "esperar": 0,  "sensor": "panico",   "sector": "SJS-02", "tipo": "PANICO" },
+        { "esperar": 10, "sensor": "acustico", "sector": "SJS-02", "sonido": "VIDRIO_ROTO", "probabilidad": 0.4 }
+      ]
+    }
+  }
+}

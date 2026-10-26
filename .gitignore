@@ -1,0 +1,17 @@
+
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Resultados temporales de JMeter
+pruebas/jmeter/*.jtl
+pruebas/jmeter/reporte/
+
+
+# Resultados de JMeter
+pruebas/jmeter/*.log
+
+

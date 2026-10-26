@@ -1,0 +1,27 @@
+apiVersion: 1
+
+datasources:
+  - name: PostgreSQL
+    uid: postgres-sjs
+    type: grafana-postgresql-datasource
+    url: postgres:5432
+    user: grafana_ro
+    isDefault: true
+    editable: false
+    jsonData:
+      database: $POSTGRES_DB
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+      maxOpenConns: 10
+    secureJsonData:
+      password: $GRAFANA_RO_PASSWORD
+
+  - name: Elasticsearch
+    uid: elastic-sjs
+    type: elasticsearch
+    url: http://elasticsearch:9200
+    editable: false
+    jsonData:
+      index: alertas
+      timeField: createdAt
